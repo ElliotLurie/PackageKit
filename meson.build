@@ -41,7 +41,7 @@ endif
 
 elogind = []
 if get_option('elogind')
-  elogind = dependency('elogind', version: '>=229.4')
+  elogind = dependency('libelogind', version: '>=229.4')
   add_project_arguments ('-DHAVE_SYSTEMD_SD_LOGIN_H=1', language: 'c')
   add_project_arguments ('-DHAVE_SYSTEMD_SD_JOURNAL_H=1', language: 'c')
 endif

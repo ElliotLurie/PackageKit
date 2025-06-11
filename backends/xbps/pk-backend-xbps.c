@@ -11,7 +11,7 @@
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
@@ -45,94 +45,6 @@ pk_backend_destroy (PkBackend *backend)
 	xbps_end (&xbps);
 }
 
-static char*
-id_from_pkg (xbps_dictionary_t pkg)
-{
-  gchar *name, *version, *id;
-	const gchar *arch, *repo;
-
-	xbps_dictionary_get_cstring (pkg, "pkgver", &name);
-
-  version = strrchr (name, '-');
-  version[0] = '\0';
-  version++;
-
-	xbps_dictionary_get_cstring_nocopy (pkg, "architecture", &arch);
-	xbps_dictionary_get_cstring_nocopy (pkg, "repository", &repo);
-
-	id = pk_package_id_build (name, version, arch, strrchr (repo, '/') + 1);
-  free (name);
-  return id;
-}
-
-struct getpkg_data {
-	PkBackendJob *job;
-	PkInfoEnum info;
-};
-
-static int
-getpkg_foreach_cb (struct xbps_handle *xbps_p, xbps_object_t obj, const char *key, void *data, _Bool *done)
-{
-	struct getpkg_data *gp = (struct getpkg_data *) data;
-	xbps_dictionary_t pkg = (xbps_dictionary_t) obj;
-
-	g_autofree gchar *id = id_from_pkg (pkg);
-
-	const gchar* summary;
-	xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &summary);
-
-	pk_backend_job_package (gp->job, gp->info, id, summary);
-
-	return 0;
-}
-
-void
-pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filters)
-{
-	struct getpkg_data data;
-	data.job = job;
-
-	pk_backend_job_set_status (job, PK_STATUS_ENUM_REQUEST);
-
-	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_INSTALLED, -1)) {
-		data.info = PK_INFO_ENUM_INSTALLED;
-		xbps_pkgdb_foreach_cb (&xbps, getpkg_foreach_cb, &data);
-	}
-
-	pk_backend_job_finished (job);
-}
-
-void
-pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **files)
-{
-	int pkgs;
-  pk_backend_job_set_status (job, PK_STATUS_ENUM_SETUP);
-  pk_backend_job_set_percentage (job, 0);
-
-	pkgs = 0;
-	while (files [pkgs] != NULL)
-		pkgs++;
-
-  pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
-  for (int i = 0; i < pkgs; i++) {
-		xbps_dictionary_t pkg = xbps_pkgdb_get_pkg (&xbps, files [i]);
-
-		g_autofree gchar* id = id_from_pkg (pkg);
-		gulong size = xbps_number_unsigned_integer_value (xbps_dictionary_get (pkg, "installed_size"));
-		const gchar* summary, *license, *url;
-
-
-		xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &summary);
-		xbps_dictionary_get_cstring_nocopy (pkg, "license", &license);
-		xbps_dictionary_get_cstring_nocopy (pkg, "homepage", &url);
-
-		pk_backend_job_details (job, id, summary, license, PK_GROUP_ENUM_UNKNOWN, NULL, url, size);
-		pk_backend_job_set_percentage (job, (int) ((float) i / pkgs * 100));
-	}
-
-  pk_backend_job_finished (job);
-}
-
 PkBitfield
 pk_backend_get_groups (PkBackend *backend)
 {
@@ -149,6 +61,163 @@ gboolean
 pk_backend_supports_parallelization (PkBackend *backend)
 {
 	return TRUE;
+}
+
+static const gchar*
+format_repo (const gchar *repository)
+{
+	const gchar *repo;
+
+	if (repository == NULL)
+		return "";
+
+	repo = strrchr (repository, '/');
+	if (repo == NULL)
+		return "";
+
+	return repo + 1; /* Skip the "/" */
+}
+
+static gchar*
+id_from_pkg (xbps_dictionary_t pkg, const gchar *repo)
+{
+	gchar *name, *version, *id;
+	const gchar *arch;
+
+	xbps_dictionary_get_cstring (pkg, "pkgver", &name);
+
+	version = strrchr (name, '-');
+	version[0] = '\0';
+	version++;
+	
+	xbps_dictionary_get_cstring_nocopy (pkg, "architecture", &arch);
+	
+	if (repo == NULL) {
+		const gchar *repository = NULL;
+		xbps_dictionary_get_cstring_nocopy (pkg, "repository", &repository);
+
+		repo = format_repo (repository);
+	}
+
+	id = pk_package_id_build (name, version, arch, repo);
+	free (name);
+	return id;
+}
+
+void
+pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **files)
+{
+	int pkgs;
+	pk_backend_job_set_status (job, PK_STATUS_ENUM_SETUP);
+	pk_backend_job_set_percentage (job, 0);
+
+	pkgs = 0;
+	while (files [pkgs] != NULL)
+		pkgs++;
+
+	pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+	for (int i = 0; i < pkgs; i++) {
+		xbps_dictionary_t pkg = xbps_pkgdb_get_pkg (&xbps, files [i]);
+
+		g_autofree gchar* id = id_from_pkg (pkg, "local");
+		gulong size = xbps_number_unsigned_integer_value (xbps_dictionary_get (pkg, "installed_size"));
+		const gchar *summary, *license, *url;
+
+
+		xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &summary);
+		xbps_dictionary_get_cstring_nocopy (pkg, "license", &license);
+		xbps_dictionary_get_cstring_nocopy (pkg, "homepage", &url);
+
+		pk_backend_job_details (job, id, summary, license, PK_GROUP_ENUM_UNKNOWN, NULL, url, size);
+		pk_backend_job_set_percentage (job, (int) ((float) i / pkgs * 100));
+
+		xbps_object_release (pkg);
+	}
+
+	pk_backend_job_finished (job);
+}
+
+struct getpkg_data {
+	GSList *prev_pkgs;
+	PkInfoEnum info;
+	PkBackendJob *job;
+	const gchar *repo;
+};
+
+
+static int
+getpkg_cb (struct xbps_handle *, xbps_object_t obj, const char *key, void *data, _Bool *done)
+{
+	struct getpkg_data *gp = (struct getpkg_data *) data;
+	xbps_dictionary_t pkg = (xbps_dictionary_t) obj;
+	gchar *id = id_from_pkg (pkg, gp->repo);
+	const gchar* summary;
+	
+	for (GSList *prev_pkg = gp->prev_pkgs; prev_pkg != NULL; prev_pkg = prev_pkg->next) {
+		gchar *prev_id = (gchar *) prev_pkg->data;
+
+		if (g_strcmp0 (id, prev_id) == 0) {
+			g_free (id);
+			return 0;
+		}
+	}
+
+	gp->prev_pkgs = g_slist_append (gp->prev_pkgs, id);
+	xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &summary);
+
+	pk_backend_job_package (gp->job, gp->info, id, summary);
+	return 0;
+}
+
+static int
+getpkg_repo_cb (struct xbps_repo *repo, void *data, _Bool *done)
+{
+	struct getpkg_data *gp = (struct getpkg_data *) data;
+	xbps_array_t keys;
+	int ret;
+
+	if (repo->idx == NULL) return 0;
+	gp->repo = format_repo (repo->uri);
+	
+	keys = xbps_dictionary_all_keys (repo->idx);
+
+	ret = xbps_array_foreach_cb (repo->xhp, keys, repo->idx, getpkg_cb, data);
+	xbps_object_release (keys);
+	return ret;
+}
+
+void
+pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filters)
+{
+	struct getpkg_data data;
+	data.job = job;
+	data.repo = NULL;
+	data.prev_pkgs = NULL;
+
+	pk_backend_job_set_status (job, PK_STATUS_ENUM_REQUEST);
+
+	data.info = PK_INFO_ENUM_INSTALLED;
+	xbps_pkgdb_foreach_cb (&xbps, getpkg_cb, &data);
+	 
+	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_NOT_INSTALLED, -1)) {
+		data.info = PK_INFO_ENUM_AVAILABLE;
+		xbps_rpool_foreach (&xbps, getpkg_repo_cb, &data);
+	}
+
+	g_slist_free_full (data.prev_pkgs, g_free);
+	pk_backend_job_finished (job);
+}
+
+void pk_backend_search_names (PkBackend *backend, PkBackendJob *job, PkBitfield filters, gchar **values)
+{
+	pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+	
+	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_INSTALLED, -1)) {
+
+	}
+
+
+	pk_backend_job_finished (job);
 }
 
 const gchar *

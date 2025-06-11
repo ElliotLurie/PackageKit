@@ -54,13 +54,14 @@ pk_backend_get_groups (PkBackend *backend)
 PkBitfield
 pk_backend_get_filters (PkBackend *backend)
 {
-	return pk_bitfield_from_enums (PK_FILTER_ENUM_INSTALLED, PK_FILTER_ENUM_NOT_INSTALLED, -1);
+	return pk_bitfield_from_enums (PK_FILTER_ENUM_INSTALLED, PK_FILTER_ENUM_NOT_INSTALLED,
+			PK_FILTER_ENUM_ARCH, PK_FILTER_ENUM_NOT_ARCH, -1);
 }
 
 gboolean
 pk_backend_supports_parallelization (PkBackend *backend)
 {
-	return TRUE;
+	return FALSE;
 }
 
 static const gchar*
@@ -123,7 +124,6 @@ pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **fil
 		gulong size = xbps_number_unsigned_integer_value (xbps_dictionary_get (pkg, "installed_size"));
 		const gchar *summary, *license, *url;
 
-
 		xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &summary);
 		xbps_dictionary_get_cstring_nocopy (pkg, "license", &license);
 		xbps_dictionary_get_cstring_nocopy (pkg, "homepage", &url);
@@ -138,9 +138,10 @@ pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **fil
 }
 
 struct getpkg_data {
-	GSList *prev_pkgs;
+	PkBitfield filters;
 	PkInfoEnum info;
 	PkBackendJob *job;
+	GSList *prev_pkgs;
 	const gchar *repo;
 };
 
@@ -150,9 +151,19 @@ getpkg_cb (struct xbps_handle *, xbps_object_t obj, const char *key, void *data,
 {
 	struct getpkg_data *gp = (struct getpkg_data *) data;
 	xbps_dictionary_t pkg = (xbps_dictionary_t) obj;
-	gchar *id = id_from_pkg (pkg, gp->repo);
-	const gchar* summary;
+	gchar *id;
+	const gchar *arch = NULL, *summary;
+
+	xbps_dictionary_get_cstring_nocopy (pkg, "architecture", &arch);
+	if (pk_bitfield_contain_priority (gp->filters, PK_FILTER_ENUM_ARCH, -1) > 0
+			&& g_strcmp0 (xbps.native_arch + 1, arch) != 0)
+		return 0;
+
+	if (pk_bitfield_contain_priority (gp->filters, PK_FILTER_ENUM_NOT_ARCH, -1) > 0
+			&& g_strcmp0 (xbps.native_arch + 1, arch) == 0)
+		return 0;
 	
+	id = id_from_pkg (pkg, gp->repo);
 	for (GSList *prev_pkg = gp->prev_pkgs; prev_pkg != NULL; prev_pkg = prev_pkg->next) {
 		gchar *prev_id = (gchar *) prev_pkg->data;
 
@@ -190,6 +201,7 @@ void
 pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filters)
 {
 	struct getpkg_data data;
+	data.filters = filters;
 	data.job = job;
 	data.repo = NULL;
 	data.prev_pkgs = NULL;

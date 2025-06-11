@@ -174,9 +174,11 @@ pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 
 	pk_backend_job_set_status (job, PK_STATUS_ENUM_REQUEST);
 
-	data.info = PK_INFO_ENUM_INSTALLED;
-	xbps_pkgdb_foreach_cb (xbps, getpkg_cb, &data);
-	 
+	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_INSTALLED, -1)) {
+		data.info = PK_INFO_ENUM_INSTALLED;
+		xbps_pkgdb_foreach_cb (xbps, getpkg_cb, &data);
+	}
+
 	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_NOT_INSTALLED, -1)) {
 		data.info = PK_INFO_ENUM_AVAILABLE;
 		xbps_rpool_foreach (xbps, getpkg_repo_cb, &data);
@@ -193,7 +195,6 @@ void pk_backend_search_names (PkBackend *backend, PkBackendJob *job, PkBitfield 
 	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_INSTALLED, -1)) {
 
 	}
-
 
 	pk_backend_job_finished (job);
 }

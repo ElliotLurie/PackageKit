@@ -141,6 +141,12 @@ query_packages_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key,
 		}
 	}
 
+	/* Don't show "available" packages if they are installed on the system */
+	if (!(pk_bitfield_contain_priority (qd->filters, PK_FILTER_ENUM_INSTALLED, -1) > 0) &&
+			(pk_bitfield_contain_priority (qd->filters, PK_FILTER_ENUM_NOT_INSTALLED, -1) > 0) &&
+			xbps_pkg_is_installed (xbps, pkgver))
+		return 0;
+
 	qd->prev_pkgs = g_slist_append (qd->prev_pkgs, id);
 	xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &short_desc);
 

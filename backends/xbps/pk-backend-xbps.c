@@ -67,7 +67,7 @@ pk_backend_get_filters (PkBackend *backend)
 gboolean
 pk_backend_supports_parallelization (PkBackend *backend)
 {
-	return FALSE;
+	return false;
 }
 
 static const gchar*
@@ -201,17 +201,36 @@ pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 	pk_backend_job_finished (job);
 }
 
-static _Bool
-search_names_filter (xbps_dictionary_t pkg, const char *name, void *data)
+static void
+search (PkBackend *backend, PkBackendJob *job, struct query_data *qd, PkBitfield filters, gchar **values)
 {
-	gchar **values = (gchar **) data;
+	guint len = g_strv_length (values);
+	g_autofree gchar **tokens = g_malloc (sizeof (gchar *) * (len + 1));
 
-	for (guint i = 0; i < g_strv_length (values); i++) {
-		if (strstr (name, values[i]))
-			return true;
+	for (guint i = 0; i < len; i++) {
+		tokens[i] = g_utf8_casefold (values [i], -1);
 	}
+	tokens [len] = NULL;
 
-	return false;
+	qd->filter_data = tokens;
+	query_packages (backend, job, qd, filters);
+
+	for (guint i = 0; i < len; i++) {
+		g_free (tokens [i]);
+	}
+}
+
+static _Bool
+search_names_filter (xbps_dictionary_t pkg, const gchar *_name, void *data)
+{
+	gchar **tokens = (gchar **) data;
+	g_autofree gchar *name = g_utf8_casefold (_name, -1);
+
+	for (guint i = 0; i < g_strv_length (tokens); i++)
+		if (!strstr (name, tokens[i]))
+			return false;
+
+	return true;
 }
 
 void
@@ -219,9 +238,37 @@ pk_backend_search_names (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 {
 	struct query_data qd;
 	qd.filter_func = search_names_filter;
-	qd.filter_data = values;
 
-	query_packages (backend, job, &qd, filters);
+	search (backend, job, &qd, filters, values);
+	pk_backend_job_finished (job);
+}
+
+static _Bool
+search_details_filter (xbps_dictionary_t pkg, const gchar *_name, void *data)
+{
+	gchar **tokens = (gchar **) data;
+	g_autofree gchar *name = g_utf8_casefold (_name, -1);
+	g_autofree gchar* short_desc;
+	const gchar* _short_desc;
+
+	xbps_dictionary_get_cstring_nocopy (pkg, "short_desc", &_short_desc);
+	short_desc = g_utf8_casefold (_short_desc, -1);
+
+	for (guint i = 0; i < g_strv_length (tokens); i++)
+		if (!strstr (name, tokens[i]) && !strstr (short_desc, tokens[i]))
+			return false;
+
+
+	return true;
+}
+
+void
+pk_backend_search_details (PkBackend *backend, PkBackendJob *job, PkBitfield filters, gchar **values)
+{
+	struct query_data qd;
+	qd.filter_func = search_details_filter;
+
+	search (backend, job, &qd, filters, values);
 	pk_backend_job_finished (job);
 }
 

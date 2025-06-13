@@ -31,12 +31,33 @@
 
 #include <xbps.h>
 
+static void
+fetch_cb (const struct xbps_fetch_cb_data *, void *)
+{
+
+}
+
+static int
+state_cb (const struct xbps_state_cb_data *, void *)
+{
+	return 0;
+}
+
+static void
+unpack_cb (const struct xbps_unpack_cb_data *, void *)
+{
+
+}
 
 void
 pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 {
 	struct xbps_handle *xbps = malloc (sizeof (struct xbps_handle));
 	memset (xbps, 0, sizeof (struct xbps_handle));
+
+	xbps->fetch_cb = fetch_cb;
+	xbps->state_cb = state_cb;
+	xbps->unpack_cb = unpack_cb;
 
 	xbps_init (xbps);
 	pk_backend_set_user_data (backend, xbps);
@@ -95,17 +116,32 @@ static void
 load_package_data (struct package_data *pd, xbps_dictionary_t pkg, const gchar *name)
 {
 	xbps_dictionary_get_cstring_nocopy (pkg, "architecture", &pd->arch);
-	pd->name = name;
-
 	xbps_dictionary_get_cstring_nocopy (pkg, "pkgver", &pd->pkgver);
+
+	pd->name = name;
 	pd->version = xbps_pkg_version (pd->pkgver);
 
 	pd->pkg = pkg;
 }
 
+static const gchar *
+get_repository_from_package (xbps_dictionary_t pkg)
+{
+	const gchar *repo;
+	xbps_dictionary_get_cstring_nocopy (pkg, "repository", &repo);
+
+	return format_repo (repo);
+}
+
+static gchar *
+build_id_from_package (struct package_data *pd)
+{
+	return pk_package_id_build (pd->name, pd->version, pd->arch, pd->repo);
+}
+
 struct query_data;
 
-typedef bool (*filter)(struct query_data *qd, struct package_data *pd);
+typedef bool (*filter)(struct package_data *pd, void *filter_data);
 
 struct query_data {
 	PkBitfield filters;
@@ -117,35 +153,29 @@ struct query_data {
 	const gchar *repo;
 
 	filter filter_cb;
-
-	void *data;
+	void *filter_data;
 };
 
 static bool
-filter_package (struct xbps_handle *xbps, struct query_data *qd, struct package_data *pd)
+filter_package (struct xbps_handle *xbps, struct package_data *pd, PkBitfield filters)
 {
-	if (pk_bitfield_contain_priority (qd->filters, PK_FILTER_ENUM_ARCH, -1) > 0
+	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_ARCH, -1) > 0
 			&& g_strcmp0 (xbps->native_arch + 1, pd->arch) != 0)
 		return false;
 
-	if (pk_bitfield_contain_priority (qd->filters, PK_FILTER_ENUM_NOT_ARCH, -1) > 0
+	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_NOT_ARCH, -1) > 0
 			&& g_strcmp0 (xbps->native_arch + 1, pd->arch) == 0)
 		return false;
 	
-	if (qd->filter_cb != NULL && !qd->filter_cb (qd, pd))
-		return false;
-
-
 	return true;
 }
 
 static void
-add_package (struct query_data *qd, struct package_data *pd)
+get_add_package (struct query_data *qd, struct package_data *pd)
 {
-	gchar *id;
 	const gchar *short_desc;
 
-	id = pk_package_id_build (pd->name, pd->version, pd->arch, pd->repo);
+	gchar *id = build_id_from_package (pd);
 	for (GSList *prev_pkg = qd->prev_pkgs; prev_pkg != NULL; prev_pkg = prev_pkg->next) {
 		gchar *prev_id = (gchar *) prev_pkg->data;
 
@@ -171,13 +201,13 @@ get_installed_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, 
 	load_package_data (&pd, pkg, key);
 
 	/* Filter packages */
-	if (!filter_package (xbps, qd, &pd))
+	if (!filter_package (xbps, &pd, qd->filters) ||
+			(qd->filter_cb != NULL && qd->filter_cb (&pd, qd->filter_data)))
 		return 0;
 
-	xbps_dictionary_get_cstring_nocopy (pkg, "repository", &pd.repo);
-	pd.repo = format_repo (pd.repo);
+	pd.repo = get_repository_from_package (pkg);
 
-	add_package (qd, &pd);
+	get_add_package (qd, &pd);
 	return 0;
 }
 
@@ -191,7 +221,8 @@ get_available_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, 
 	load_package_data (&pd, pkg, key);
 
 	/* Filter packages */
-	if (!filter_package (xbps, qd, &pd))
+	if (!filter_package (xbps, &pd, qd->filters) ||
+			(qd->filter_cb != NULL && qd->filter_cb (&pd, qd->filter_data)))
 		return 0;
 
 	/* Don't show "available" packages if they are installed on the system */
@@ -200,7 +231,7 @@ get_available_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, 
 		return 0;
 
 	pd.repo = qd->repo;
-	add_package (qd, &pd);
+	get_add_package (qd, &pd);
 	return 0;
 }
 
@@ -229,7 +260,7 @@ begin_query (struct query_data *qd, PkBackendJob *job, PkBitfield filters)
 	qd->repo = NULL;
 	qd->prev_pkgs = NULL;
 	qd->filter_cb = NULL;
-	qd->data = NULL;
+	qd->filter_data = NULL;
 }
 
 typedef int (*query_installed)(struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done);
@@ -273,6 +304,136 @@ pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 	finish_query (&qd);
 }
 
+void
+pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
+{
+	/* TODO:
+	 * List packages that caused errors
+	 * Specify commit errors */
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+	int rv = xbps_pkgdb_lock (xbps);
+
+	if (rv != 0)
+		{
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_CANNOT_GET_LOCK, "Failed to lock XBPS database: %s\n", strerror (rv));	
+			pk_backend_job_finished (job);
+			return;
+		}
+
+	for (guint i = 0; i < g_strv_length (package_ids); i++) {
+		gchar **id_values = pk_package_id_split (package_ids [i]);
+		g_autofree gchar *pkgver = g_strdup_printf ("%s-%s", id_values [PK_PACKAGE_ID_NAME], id_values [PK_PACKAGE_ID_VERSION]);
+
+		g_strfreev (id_values);
+
+		rv = xbps_transaction_install_pkg (xbps, pkgver, false);
+
+		switch (rv) {
+			case 0:
+				continue;
+			case EBUSY:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_INSTALL_BLOCKED, "The xbps package must be updated first\n");	
+				break;
+			case EEXIST:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_ALREADY_INSTALLED, "%s is already installed\n", pkgver);	
+				break;
+			case ENOENT:
+			case ENOTSUP:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "%s not found in repository pool\n", pkgver);	
+				break;
+			case ENXIO:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_CANNOT_GET_REQUIRES, "%s has invalid dependencies\n", pkgver);	
+				break;
+			default:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_UNKNOWN, "%s failed to be queued for installation\n", pkgver);
+		}
+
+		xbps_pkgdb_unlock (xbps);
+		pk_backend_job_finished (job);
+		return;
+	}
+
+	rv = xbps_transaction_prepare (xbps);
+	if (rv != 0) switch (rv) {
+		case EAGAIN:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_CONFLICTS, "Packages conflict\n");
+			break;
+		case EINVAL:
+		case ENXIO:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "An internal error occurred\n");
+			break;
+		case ENODEV:
+		case ENOEXEC:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, "Dependencies missing\n");
+			break;
+		case ENOSPC:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_NO_SPACE_ON_DEVICE, "No space left on root filesystem\n");
+			break;
+		default:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_UNKNOWN, "Failed to prepare transaction\n");
+
+		pk_backend_job_finished (job);
+		xbps_pkgdb_unlock (xbps);
+		return;
+	}
+
+	xbps_transaction_commit (xbps);
+	if (rv != 0)
+		pk_backend_job_error_code (job, PK_ERROR_ENUM_TRANSACTION_ERROR, "Failed to commit transaction\n");
+
+	xbps_pkgdb_unlock (xbps);
+	pk_backend_job_finished (job);
+}
+
+void
+pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, gchar **packages)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+	guint len = g_strv_length (packages);
+	
+	bool installed = pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_INSTALLED, -1) >= 0;
+	bool not_installed = pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_NOT_INSTALLED, -1) >= 0;
+
+	struct query_data qd;
+	begin_query (&qd, job, filters);
+
+	for (guint i = 0; i < len; i++) {
+		const gchar *name;
+		struct package_data pd;
+		xbps_dictionary_t pkg = NULL; 
+
+		bool pkg_is_installed = xbps_pkg_is_installed (xbps, packages [i]);
+		PkInfoEnum info;
+
+		if (installed || (!not_installed && pkg_is_installed)) {
+			info = PK_INFO_ENUM_INSTALLED;
+			pkg = xbps_pkgdb_get_pkg (xbps, packages [i]);
+		} else if (not_installed || !pkg_is_installed) {
+			info = PK_INFO_ENUM_AVAILABLE;
+			pkg = xbps_rpool_get_pkg (xbps, packages [i]);
+		}
+
+		if (pkg == NULL)
+			continue;
+
+		xbps_dictionary_get_cstring_nocopy (pkg, "pkgname", &name);
+		load_package_data (&pd, pkg, name);
+		pd.repo = get_repository_from_package (pkg);
+
+		if (filter_package (xbps, &pd, filters)) {
+			const gchar *short_desc;
+
+			g_autofree gchar *id = build_id_from_package (&pd);
+			xbps_dictionary_get_cstring_nocopy (pd.pkg, "short_desc", &short_desc);
+			pk_backend_job_package (job, info, id, short_desc);
+		}
+
+		xbps_object_release (pkg);
+	}
+
+	pk_backend_job_finished (job);
+}
+
 static void
 begin_search (struct query_data *qd, gchar **values)
 {
@@ -284,13 +445,13 @@ begin_search (struct query_data *qd, gchar **values)
 	}
 	tokens [len] = NULL;
 
-	qd->data = tokens;
+	qd->filter_data = tokens;
 }
 
 static void
 end_search (struct query_data *qd)
 {
-	gchar **tokens = (gchar **) qd->data;
+	gchar **tokens = (gchar **) qd->filter_data;
 
 	for (guint i = 0; i < g_strv_length (tokens); i++) {
 		g_free (tokens [i]);
@@ -300,9 +461,9 @@ end_search (struct query_data *qd)
 }
 
 static bool
-search_names_filter_cb (struct query_data *qd, struct package_data *pd)
+search_names_filter_cb (struct package_data *pd, void *filter_data)
 {
-	gchar **tokens = (gchar **) qd->data;
+	gchar **tokens = (gchar **) filter_data;
 	g_autofree gchar *name = g_utf8_casefold (pd->name, -1);
 
 	for (guint i = 0; i < g_strv_length (tokens); i++)
@@ -327,9 +488,9 @@ pk_backend_search_names (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 }
 
 static bool
-search_details_filter_cb (struct query_data *qd, struct package_data *pd)
+search_details_filter_cb (struct package_data *pd, void *filter_data)
 {
-	gchar **tokens = (gchar **) qd->data;
+	gchar **tokens = (gchar **) filter_data;
 	g_autofree gchar *name = g_utf8_casefold (pd->name, -1);
 	g_autofree gchar* short_desc;
 	const gchar* _short_desc;

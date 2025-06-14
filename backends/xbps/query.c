@@ -71,11 +71,11 @@ static bool
 filter_package (struct xbps_handle *xbps, struct package_data *pd, PkBitfield filters)
 {
 	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_ARCH, -1) > 0
-			&& g_strcmp0 (xbps->native_arch + 1, pd->arch) != 0)
+			&& (g_strcmp0 (xbps->native_arch, pd->arch) != 0))
 		return false;
 
 	if (pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_NOT_ARCH, -1) > 0
-			&& g_strcmp0 (xbps->native_arch + 1, pd->arch) == 0)
+			&& (g_strcmp0 (xbps->native_arch, pd->arch) == 0))
 		return false;
 	
 	return true;
@@ -198,7 +198,6 @@ static void
 finish_query (struct query_data *qd)
 {
 	g_slist_free_full (qd->prev_pkgs, g_free);
-	pk_backend_job_finished (qd->job);
 }
 
 void
@@ -289,8 +288,10 @@ pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, g
 	begin_query (&qd, job, filters);
 
 	for (guint i = 0; i < len; i++) {
-		const gchar *name;
+		const gchar *pkgver;
+		gchar *name;
 		struct package_data pd;
+		size_t name_size;
 		xbps_dictionary_t pkg = NULL; 
 
 		bool pkg_is_installed = xbps_pkg_is_installed (xbps, packages [i]);
@@ -307,12 +308,18 @@ pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, g
 		if (pkg == NULL)
 			continue;
 
-		xbps_dictionary_get_cstring_nocopy (pkg, "pkgname", &name);
-		load_package_data (&pd, pkg, name);
+		xbps_dictionary_get_cstring_nocopy (pkg, "pkgver", &pkgver);
+		name_size = (strrchr (pkgver, '-') - pkgver + 1) * sizeof (char);
+		name = g_malloc (name_size);
+		xbps_pkg_name (name, name_size, pkgver);
+
+		load_package_data (&pd, pkg, (gchar *) name);
 		pd.repo = get_repository_from_package (pkg);
 
 		if (filter_package (xbps, &pd, filters))
 			add_package (job, info, &pd);
+
+		g_free (name);
 	}
 
 	pk_backend_job_finished (job);

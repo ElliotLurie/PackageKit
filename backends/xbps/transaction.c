@@ -108,6 +108,77 @@ package_name_from_id (const gchar *id)
 	return g_strdup (id_values [PK_PACKAGE_ID_NAME]);
 }
 
+static bool
+remove_dependent (PkBackendJob *job, struct xbps_handle *xbps, gchar *pkg, bool autoremove)
+{
+	xbps_array_t dependents = xbps_pkgdb_get_pkg_revdeps (xbps, pkg);
+	int rv;
+	for (guint i = 0; i < xbps_array_count (dependents); i++) {
+		const gchar *dep;
+		if (!xbps_array_get_cstring_nocopy (dependents, i, &dep))
+			return false;
+
+		if (!remove_dependent (job, xbps, (gchar *) dep, autoremove))
+			return false;
+	}
+
+	rv = xbps_transaction_remove_pkg (xbps, pkg, autoremove);
+	switch (rv) {
+		case 0:
+			break;
+		case ENOENT:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_INSTALLED, "%s is not installed\n", pkg);
+			return false;
+		default:
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s could not be queed for remvoal\n", pkg);
+			return false;
+	}
+
+	return true;
+}
+
+void
+pk_backend_remove_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids, gboolean allow_deps, gboolean autoremove)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+
+	if (!begin_transaction (job, xbps))
+		return;
+
+	for (guint i = 0; i < g_strv_length (package_ids); i++) {
+		g_autofree gchar *pkg = package_name_from_id (package_ids [i]);
+		int rv;
+
+		if (allow_deps) {
+			if (!remove_dependent (job, xbps, pkg, autoremove))
+				goto END;
+
+			continue;
+		}
+		
+		rv = xbps_transaction_remove_pkg (xbps, pkg, autoremove);
+		switch (rv) {
+			case 0:
+				continue;
+			case EEXIST:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, "%s is a dependency of another package\n", pkg);
+				break;
+			case ENOENT:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_INSTALLED, "%s is not installed\n", pkg);
+				break;
+			default:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_UNKNOWN, "%s could not be queed for remvoal\n", pkg);
+		}
+
+		goto END;
+	}
+
+	run_transaction (job, xbps);
+
+END:
+	finish_transaction (job, xbps);
+}
+
 void
 pk_backend_update_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
 {

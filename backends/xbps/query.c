@@ -82,7 +82,7 @@ filter_package (struct xbps_handle *xbps, struct package_data *pd, PkBitfield fi
 }
 
 static void
-get_add_package (struct query_data *qd, struct package_data *pd)
+query_add_package (struct query_data *qd, struct package_data *pd)
 {
 	const gchar *short_desc;
 
@@ -103,7 +103,7 @@ get_add_package (struct query_data *qd, struct package_data *pd)
 }
 
 static int
-get_installed_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done)
+query_installed_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done)
 {
 	struct query_data *qd = (struct query_data *) data;
 	xbps_dictionary_t pkg = (xbps_dictionary_t) obj;
@@ -118,12 +118,12 @@ get_installed_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, 
 
 	pd.repo = get_repository_from_package (pkg);
 
-	get_add_package (qd, &pd);
+	query_add_package (qd, &pd);
 	return 0;
 }
 
 static int
-get_available_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done)
+query_available_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done)
 {
 	struct query_data *qd = (struct query_data *) data;
 	xbps_dictionary_t pkg = (xbps_dictionary_t) obj;
@@ -142,12 +142,12 @@ get_available_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, 
 		return 0;
 
 	pd.repo = qd->repo;
-	get_add_package (qd, &pd);
+	query_add_package (qd, &pd);
 	return 0;
 }
 
 static int
-get_repos_cb (struct xbps_repo *repo, void *data, bool *done)
+query_repos_cb (struct xbps_repo *repo, void *data, bool *done)
 {
 	struct query_data *qd = (struct query_data *) data;
 	xbps_array_t keys;
@@ -158,7 +158,7 @@ get_repos_cb (struct xbps_repo *repo, void *data, bool *done)
 	
 	keys = xbps_dictionary_all_keys (repo->idx);
 
-	ret = xbps_array_foreach_cb (repo->xhp, keys, repo->idx, get_available_cb, data);
+	ret = xbps_array_foreach_cb (repo->xhp, keys, repo->idx, query_available_cb, data);
 	xbps_object_release (keys);
 	return ret;
 }
@@ -174,11 +174,8 @@ begin_query (struct query_data *qd, PkBackendJob *job, PkBitfield filters)
 	qd->filter_data = NULL;
 }
 
-typedef int (*query_installed)(struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done);
-typedef int (*query_repo)(struct xbps_repo *repo, void *data, bool *done);
-
 static void
-query (PkBackend *backend, struct query_data *qd, query_installed query_installed_cb, query_repo query_repo_cb)
+query (PkBackend *backend, struct query_data *qd)
 {
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 
@@ -194,7 +191,7 @@ query (PkBackend *backend, struct query_data *qd, query_installed query_installe
 
 	if (not_installed || !installed) {
 		qd->info = PK_INFO_ENUM_AVAILABLE;
-		xbps_rpool_foreach (xbps, query_repo_cb, qd);
+		xbps_rpool_foreach (xbps, query_repos_cb, qd);
 	}
 }
 
@@ -210,7 +207,61 @@ pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 {
 	struct query_data qd;
 	begin_query (&qd, job, filters);
-	query (backend, &qd, get_installed_cb, get_repos_cb);
+	query (backend, &qd);
+	finish_query (&qd);
+}
+
+
+static void
+add_package (PkBackendJob *job, PkInfoEnum info, struct package_data *pd)
+{
+	const gchar *short_desc;
+
+	g_autofree gchar *id = build_id_from_package (pd);
+	xbps_dictionary_get_cstring_nocopy (pd->pkg, "short_desc", &short_desc);
+	pk_backend_job_package (job, info, id, short_desc);
+}
+
+static int
+get_update_cb (struct xbps_handle *xbps, xbps_object_t obj, const char *key, void *data, bool *done)
+{
+	const gchar *ver, *remote_ver;
+	struct query_data *qd = (struct query_data *) data;
+
+	xbps_dictionary_t pkg = (xbps_dictionary_t) obj, remote_pkg = xbps_rpool_get_pkg (xbps, key);
+
+	if (remote_pkg == NULL)
+		return 0;
+
+	xbps_dictionary_get_cstring_nocopy (pkg, "pkgver", &ver);
+	ver = xbps_pkg_version (ver);
+
+	xbps_dictionary_get_cstring_nocopy (remote_pkg, "pkgver", &remote_ver);
+	remote_ver = xbps_pkg_version (remote_ver);
+
+	if (xbps_cmpver (ver, remote_ver) == -1) {
+		struct package_data pd;
+		
+		load_package_data (&pd, pkg, key);
+		pd.repo = get_repository_from_package (pkg);
+
+		add_package (qd->job, PK_INFO_ENUM_NORMAL, &pd);
+	}
+
+	xbps_object_release (remote_pkg);
+	return 0;
+}
+
+void
+pk_backend_get_updates (PkBackend *backend, PkBackendJob *job, PkBitfield filters)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+
+	struct query_data qd;
+	begin_query (&qd, job, filters);
+
+	xbps_pkgdb_foreach_cb (xbps, get_update_cb, &qd);
+
 	finish_query (&qd);
 }
 
@@ -249,13 +300,8 @@ pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, g
 		load_package_data (&pd, pkg, name);
 		pd.repo = get_repository_from_package (pkg);
 
-		if (filter_package (xbps, &pd, filters)) {
-			const gchar *short_desc;
-
-			g_autofree gchar *id = build_id_from_package (&pd);
-			xbps_dictionary_get_cstring_nocopy (pd.pkg, "short_desc", &short_desc);
-			pk_backend_job_package (job, info, id, short_desc);
-		}
+		if (filter_package (xbps, &pd, filters))
+			add_package (job, info, &pd);
 	}
 
 	pk_backend_job_finished (job);
@@ -309,7 +355,7 @@ pk_backend_search_names (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 	begin_search (&qd, values);
 	qd.filter_cb = search_names_filter_cb;
 
-	query (backend, &qd, get_installed_cb, get_repos_cb);
+	query (backend, &qd);
 	end_search (&qd);
 	finish_query (&qd);
 }
@@ -341,7 +387,7 @@ pk_backend_search_details (PkBackend *backend, PkBackendJob *job, PkBitfield fil
 	begin_search (&qd, values);
 	qd.filter_cb = search_details_filter_cb;
 
-	query (backend, &qd, get_installed_cb, get_repos_cb);
+	query (backend, &qd);
 	end_search (&qd);
 	finish_query (&qd);
 }

@@ -266,6 +266,17 @@ pk_backend_get_updates (PkBackend *backend, PkBackendJob *job, PkBitfield filter
 }
 
 void
+pk_backend_refresh_cache (PkBackend *backend, PkBackendJob *job, gboolean force)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+
+	if (xbps_rpool_sync (xbps, NULL) != 0)
+		pk_backend_job_error_code (job, PK_ERROR_ENUM_REPO_NOT_FOUND, "No repositories set up\n");	
+
+	pk_backend_job_finished (job);
+}
+
+void
 pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, gchar **packages)
 {
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);

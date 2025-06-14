@@ -33,9 +33,11 @@ pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield t
 				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_ALREADY_INSTALLED, "%s is already installed\n", pkgver);	
 				break;
 			case ENOENT:
-			case ENOTSUP:
 				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "%s not found in repository pool\n", pkgver);	
 				break;
+			case ENOTSUP:
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_REPO_NOT_FOUND, "No repositories set up\n");	
+        break;
 			case ENXIO:
 				pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, "%s has invalid dependencies\n", pkgver);	
 				break;

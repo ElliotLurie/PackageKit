@@ -55,6 +55,8 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 	xbps->flags |= XBPS_FLAG_VERBOSE;
 
 	xbps_init (xbps);
+	/* TODO: init package database upstream */
+	xbps_pkgdb_get_pkg (xbps, "");
 
 	pk_backend_set_user_data (backend, xbps);
 }

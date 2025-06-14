@@ -164,15 +164,25 @@ query_repos_cb (struct xbps_repo *repo, void *data, bool *done)
 	return ret;
 }
 
-static void
-begin_query (struct query_data *qd, PkBackendJob *job, PkBitfield filters)
+static bool
+begin_query (struct query_data *qd, PkBackendJob *job, struct xbps_handle *xbps, PkBitfield filters)
 {
+	/*
+	if (!xbps_pkgdb_update (xbps, false, true)) {
+		pk_backend_job_error_code (job, PK_ERROR_ENUM_CANNOT_FETCH_SOURCES, "Failed to load package database\n");	
+		pk_backend_job_finished (job);	
+		return false;
+	}
+	*/
+
 	qd->filters = filters;
 	qd->job = job;
 	qd->repo = NULL;
 	qd->prev_pkgs = NULL;
 	qd->filter_cb = NULL;
 	qd->filter_data = NULL;
+
+	return true;
 }
 
 static void
@@ -198,6 +208,7 @@ static void
 finish_query (struct query_data *qd)
 {
 	g_slist_free_full (qd->prev_pkgs, g_free);
+	pk_backend_job_finished (qd->job);
 }
 
 void
@@ -205,7 +216,8 @@ pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 {
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 	struct query_data qd;
-	begin_query (&qd, job, filters);
+	if (!begin_query (&qd, job, xbps, filters))
+		return;
 
 	query (&qd, xbps);
 	finish_query (&qd);
@@ -257,7 +269,8 @@ pk_backend_get_updates (PkBackend *backend, PkBackendJob *job, PkBitfield filter
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 
 	struct query_data qd;
-	begin_query (&qd, job, filters);
+	if (!begin_query (&qd, job, xbps, filters))
+		return;
 
 	xbps_pkgdb_foreach_cb (xbps, get_update_cb, &qd);
 
@@ -285,7 +298,8 @@ pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, g
 	bool not_installed = pk_bitfield_contain_priority (filters, PK_FILTER_ENUM_NOT_INSTALLED, -1) >= 0;
 
 	struct query_data qd;
-	begin_query (&qd, job, filters);
+	if (!begin_query (&qd, job, xbps, filters))
+		return;
 
 	for (guint i = 0; i < len; i++) {
 		const gchar *pkgver;
@@ -370,7 +384,8 @@ pk_backend_search_names (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 	struct query_data qd;
 
-	begin_query (&qd, job, filters);
+	if (!begin_query (&qd, job, xbps, filters))
+		return;
 
 	begin_search (&qd, values);
 	qd.filter_cb = search_names_filter_cb;
@@ -404,7 +419,8 @@ pk_backend_search_details (PkBackend *backend, PkBackendJob *job, PkBitfield fil
 	struct query_data qd;
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 
-	begin_query (&qd, job, filters);
+	if (!begin_query (&qd, job, xbps, filters))
+		return;
 
 	begin_search (&qd, values);
 	qd.filter_cb = search_details_filter_cb;

@@ -12,6 +12,7 @@ begin_transaction (PkBackendJob *job, struct xbps_handle *xbps)
 
 		return false;
 	}
+	pk_backend_job_set_locked (job, true);
 
 	return true;
 }
@@ -46,21 +47,27 @@ run_transaction (PkBackendJob *job, struct xbps_handle *xbps)
 		pk_backend_job_error_code (job, PK_ERROR_ENUM_TRANSACTION_ERROR, "Failed to commit transaction\n");
 }
 
-
 static void
 finish_transaction (PkBackendJob *job, struct xbps_handle *xbps)
 {
+	if (xbps->transd != NULL)
+		{
+			xbps_object_release (xbps->transd);
+			xbps->transd = NULL;
+		}
+
 	xbps_pkgdb_unlock (xbps);
-	pk_backend_job_finished (job);
+	pk_backend_job_set_locked (job, false);
 }
 
-void
-pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
+static void
+install_packages_thread (PkBackendJob *job, GVariant *params, gpointer data)
 {
-	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+	struct xbps_handle *xbps = (struct xbps_handle *) data;
+	PkBitfield transaction_flags;
+	g_autofree gchar **package_ids;
 
-	if (!begin_transaction (job, xbps))
-		return;
+	g_variant_get (params, "(t^a&s)", &transaction_flags, &package_ids);
 
 	for (guint i = 0; i < g_strv_length (package_ids); i++) {
 		gchar **id_values = pk_package_id_split (package_ids [i]);
@@ -96,9 +103,20 @@ pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield t
 	}
 
 	run_transaction (job, xbps);
-
+	
 END:
 	finish_transaction (job, xbps);
+}
+
+void
+pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+
+	if (!begin_transaction (job, xbps))
+		return;
+
+	pk_backend_job_thread_create (job, install_packages_thread, xbps, NULL);
 }
 
 static gchar *
@@ -130,20 +148,22 @@ remove_dependent (PkBackendJob *job, struct xbps_handle *xbps, gchar *pkg, bool 
 			pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_INSTALLED, "%s is not installed\n", pkg);
 			return false;
 		default:
-			pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s could not be queed for remvoal\n", pkg);
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s could not be queued for remvoal\n", pkg);
 			return false;
 	}
 
 	return true;
 }
 
-void
-pk_backend_remove_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids, gboolean allow_deps, gboolean autoremove)
+static void
+remove_packages_thread (PkBackendJob *job, GVariant *params, gpointer data)
 {
-	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+	struct xbps_handle *xbps = (struct xbps_handle *) data;
+	PkBitfield transaction_flags;
+	g_autofree gchar **package_ids;
+	bool allow_deps, autoremove;
 
-	if (!begin_transaction (job, xbps))
-		return;
+	g_variant_get (params, "(t^a&sbb)", &transaction_flags, &package_ids, &allow_deps, &autoremove);
 
 	for (guint i = 0; i < g_strv_length (package_ids); i++) {
 		g_autofree gchar *pkg = package_name_from_id (package_ids [i]);
@@ -180,12 +200,24 @@ END:
 }
 
 void
-pk_backend_update_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
+pk_backend_remove_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids, gboolean allow_deps, gboolean autoremove)
 {
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 
 	if (!begin_transaction (job, xbps))
 		return;
+
+	pk_backend_job_thread_create (job, remove_packages_thread, xbps, NULL);
+}
+
+static void
+update_packages_thread (PkBackendJob *job, GVariant *params, gpointer data)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) data;
+	PkBitfield transaction_flags;
+	g_autofree gchar **package_ids;
+
+	g_variant_get (params, "(t^a&s)", &transaction_flags, &package_ids);
 
 	for (guint i = 0; i < g_strv_length (package_ids); i++) {
 		g_autofree gchar *pkg = package_name_from_id (package_ids [i]);
@@ -218,4 +250,15 @@ pk_backend_update_packages (PkBackend *backend, PkBackendJob *job, PkBitfield tr
 
 END:
 	finish_transaction (job, xbps);
+}
+
+void
+pk_backend_update_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+
+	if (!begin_transaction (job, xbps))
+		return;
+
+	pk_backend_job_thread_create (job, update_packages_thread, xbps, NULL);
 }

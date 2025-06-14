@@ -307,9 +307,6 @@ pk_backend_get_packages (PkBackend *backend, PkBackendJob *job, PkBitfield filte
 void
 pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
 {
-	/* TODO:
-	 * List packages that caused errors
-	 * Specify commit errors */
 	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
 	int rv = xbps_pkgdb_lock (xbps);
 
@@ -342,15 +339,13 @@ pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield t
 				pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "%s not found in repository pool\n", pkgver);	
 				break;
 			case ENXIO:
-				pk_backend_job_error_code (job, PK_ERROR_ENUM_CANNOT_GET_REQUIRES, "%s has invalid dependencies\n", pkgver);	
+				pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, "%s has invalid dependencies\n", pkgver);	
 				break;
 			default:
 				pk_backend_job_error_code (job, PK_ERROR_ENUM_UNKNOWN, "%s failed to be queued for installation\n", pkgver);
 		}
 
-		xbps_pkgdb_unlock (xbps);
-		pk_backend_job_finished (job);
-		return;
+		goto END;
 	}
 
 	rv = xbps_transaction_prepare (xbps);
@@ -364,7 +359,7 @@ pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield t
 			break;
 		case ENODEV:
 		case ENOEXEC:
-			pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, "Dependencies missing\n");
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_CANNOT_GET_REQUIRES, "Could not satisfy dependencies\n");
 			break;
 		case ENOSPC:
 			pk_backend_job_error_code (job, PK_ERROR_ENUM_NO_SPACE_ON_DEVICE, "No space left on root filesystem\n");
@@ -372,15 +367,14 @@ pk_backend_install_packages (PkBackend *backend, PkBackendJob *job, PkBitfield t
 		default:
 			pk_backend_job_error_code (job, PK_ERROR_ENUM_UNKNOWN, "Failed to prepare transaction\n");
 
-		pk_backend_job_finished (job);
-		xbps_pkgdb_unlock (xbps);
-		return;
+		goto END;
 	}
 
-	xbps_transaction_commit (xbps);
+	rv = xbps_transaction_commit (xbps);
 	if (rv != 0)
 		pk_backend_job_error_code (job, PK_ERROR_ENUM_TRANSACTION_ERROR, "Failed to commit transaction\n");
 
+END:
 	xbps_pkgdb_unlock (xbps);
 	pk_backend_job_finished (job);
 }
@@ -427,9 +421,16 @@ pk_backend_resolve (PkBackend *backend, PkBackendJob *job, PkBitfield filters, g
 			xbps_dictionary_get_cstring_nocopy (pd.pkg, "short_desc", &short_desc);
 			pk_backend_job_package (job, info, id, short_desc);
 		}
-
-		xbps_object_release (pkg);
 	}
+
+	pk_backend_job_finished (job);
+}
+
+void
+pk_backend_update_packages (PkBackend *backend, PkBackendJob *job, PkBitfield transaction_flags, gchar **package_ids)
+{
+	struct xbps_handle *xbps = (struct xbps_handle *) pk_backend_get_user_data (backend);
+	guint len = g_strv_length (package_ids);
 
 	pk_backend_job_finished (job);
 }

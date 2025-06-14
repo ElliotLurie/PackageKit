@@ -51,8 +51,11 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 	xbps->fetch_cb = fetch_cb;
 	xbps->state_cb = state_cb;
 	xbps->unpack_cb = unpack_cb;
+	xbps->flags |= XBPS_FLAG_DEBUG;
+	xbps->flags |= XBPS_FLAG_VERBOSE;
 
 	xbps_init (xbps);
+
 	pk_backend_set_user_data (backend, xbps);
 }
 

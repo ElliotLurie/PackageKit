@@ -50,12 +50,6 @@ run_transaction (PkBackendJob *job, struct xbps_handle *xbps)
 static void
 finish_transaction (PkBackendJob *job, struct xbps_handle *xbps)
 {
-	if (xbps->transd != NULL)
-		{
-			xbps_object_release (xbps->transd);
-			xbps->transd = NULL;
-		}
-
 	xbps_pkgdb_unlock (xbps);
 	pk_backend_job_set_locked (job, false);
 }
